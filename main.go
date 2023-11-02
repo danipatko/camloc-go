@@ -30,9 +30,10 @@ func f32FromBytes(bytes []byte) float32 {
     return math.Float32frombits(bits)
 }
 
+var plus = regexp.MustCompile(`\+`)
+
 // replaces + sign in topics to regexes for matching client ids
 func FillMatchers(topics ...string) {
-    var plus = regexp.MustCompile(`\+`)
     for _, v := range topics {
         re := regexp.MustCompile(string(plus.ReplaceAll([]byte(v), []byte("([a-zA-Z\\d]+)"))))
         TopicMatchers[v] = *re
@@ -43,19 +44,25 @@ func FillMatchers(topics ...string) {
 func getClientId(wildcardTopic string, topic string) *string {
     if v, ok := TopicMatchers[wildcardTopic]; ok {
         if match := v.FindStringSubmatch(topic); len(match) > 1 {
-            util.D("%v", match)
             return &match[1]
         }
     }
     return nil
 }
 
+// replaces the plus with the client id
+func replaceClientId(topic string, clientId string) string {
+    return string(plus.ReplaceAll([]byte(topic), []byte(clientId)))
+}
+
 var defaultPubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {    
     util.Msg(msg.Topic(), msg.Payload())
 }
 
-var locateHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {    
-    util.I("got position %f", f32FromBytes(msg.Payload()))
+var locateHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
+    if id := getClientId(util.GetLocation, msg.Topic()); id != nil {
+        util.I("got position %f from %s", f32FromBytes(msg.Payload()), *id)
+    }
 }
 
 // remove client from map when last will is published
@@ -69,7 +76,7 @@ var disconnectHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 // update configuration
 var configHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {    
     topic, payload := msg.Topic(), msg.Payload()
-    id := getClientId(util.Disconnect, topic)
+    id := getClientId(util.GetConfig, topic)
     if id == nil {
         return
     }
@@ -83,11 +90,47 @@ var configHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Messag
     }
 
     util.D("new config for %s : %v", *id, ClientList[*id])
+
+    go func ()  {
+        time.Sleep(time.Duration(time.Second * 4))
+        forceCameraState(client, true, *id) 
+
+        time.Sleep(time.Duration(time.Second * 4)) 
+        forceCameraState(client, false, *id) 
+    }()
+}
+
+// flash lights on a client
+func flash(client mqtt.Client, clientId string) {
+    pub(client, replaceClientId(util.Flash, clientId), []byte{})
+}
+
+// turn on/off every client camera
+func forceAllCameraState(client mqtt.Client, on bool) {
+    if on {
+        pub(client, util.ForceCameraOn, []byte{})
+    } else {
+        pub(client, util.ForceCameraOff, []byte{})
+    }
+}
+
+// turn on/off specifc client camera
+func forceCameraState(client mqtt.Client, on bool, clientId string) {
+    if on {
+        pub(client, replaceClientId(util.ForceThisCameraOn, clientId), []byte{})
+    } else {
+        pub(client, replaceClientId(util.ForceThisCameraOff, clientId), []byte{})
+    }
 }
 
 // self connected
 var onConnectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
     util.I("connected to broker")
+
+    sub(client, util.GetConfig, configHandler)
+    sub(client, util.GetLocation, locateHandler)
+    sub(client, util.Disconnect, disconnectHandler)
+
     // ask for config
     pub(client, util.AskForConfig, []byte{})
 }
@@ -119,20 +162,15 @@ func main() {
         panic(token.Error())
     }
     
-    go func() {
-        FillMatchers(util.Disconnect, util.GetConfig, util.GetLocation, util.SetConfig)
-    
-        sub(client, util.GetConfig, configHandler)
-        sub(client, util.GetLocation, locateHandler)
-        sub(client, util.Disconnect, disconnectHandler)
-    }()
+    FillMatchers(util.Disconnect, util.GetConfig, util.GetLocation, util.SetConfig)
 
-    
+
+  
     // cleanup
     go func() {
         <-sigs
         util.I("shutdown")
-        client.Disconnect(200)
+        client.Disconnect(500)
         end <- true
     }()
     <-end 
