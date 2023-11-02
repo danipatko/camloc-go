@@ -1,92 +1,152 @@
 package main
 
 import (
+	"camloc-go/util"
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"math"
 	"os"
 	"os/signal"
+	"regexp"
 	"syscall"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
-const TOPIC_LOCATE = "camloc/locate"
+type ClientConfig struct {
+    x       float32
+    y       float32
+    rot     float32
+    lastX   float32
+}
+
+var ClientList = make(map[string]ClientConfig)
+var TopicMatchers = make(map[string]regexp.Regexp)
 
 func f32FromBytes(bytes []byte) float32 {
     bits := binary.BigEndian.Uint32(bytes)
     return math.Float32frombits(bits)
 }
 
-var onPublishHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
-    switch msg.Topic() {
-        case TOPIC_LOCATE:
-            fmt.Printf("got position %f\n", f32FromBytes(msg.Payload()))
-        default:
-            fmt.Printf("Received message from %s: %s\n", msg.Topic(), msg.Payload())
+// replaces + sign in topics to regexes for matching client ids
+func FillMatchers(topics ...string) {
+    var plus = regexp.MustCompile(`\+`)
+    for _, v := range topics {
+        re := regexp.MustCompile(string(plus.ReplaceAll([]byte(v), []byte("([a-zA-Z\\d]+)"))))
+        TopicMatchers[v] = *re
     }
 }
 
+// gets the client id from topic wildcard
+func getClientId(wildcardTopic string, topic string) *string {
+    if v, ok := TopicMatchers[wildcardTopic]; ok {
+        if match := v.FindStringSubmatch(topic); len(match) > 1 {
+            util.D("%v", match)
+            return &match[1]
+        }
+    }
+    return nil
+}
+
+var defaultPubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {    
+    util.Msg(msg.Topic(), msg.Payload())
+}
+
+var locateHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {    
+    util.I("got position %f", f32FromBytes(msg.Payload()))
+}
+
+// remove client from map when last will is published
+var disconnectHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {    
+    if id := getClientId(util.Disconnect, msg.Topic()); id != nil {
+        delete(ClientList, *id)
+        util.I("%s disconnected", *id)
+    }
+}
+
+// update configuration
+var configHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {    
+    topic, payload := msg.Topic(), msg.Payload()
+    id := getClientId(util.Disconnect, topic)
+    if id == nil {
+        return
+    }
+
+    // update or create
+    x, y, rot := f32FromBytes(payload[0:4]), f32FromBytes(payload[4:8]), f32FromBytes(payload[8:12])
+    if v, exists := ClientList[*id]; exists {
+        ClientList[*id] = ClientConfig{ x: x, y: y, rot: rot, lastX: v.lastX }
+    } else {
+        ClientList[*id] = ClientConfig{ x: x, y: y, rot: rot, lastX: -1 }
+    }
+
+    util.D("new config for %s : %v", *id, ClientList[*id])
+}
+
+// self connected
 var onConnectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
-    fmt.Println("Connected")
+    util.I("connected to broker")
+    // ask for config
+    pub(client, util.AskForConfig, []byte{})
 }
 
 var onLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
-    fmt.Printf("Connect lost: %v", err)
+    util.E("connection lost: %v", err)
 }
 
 func main() {
+    // args
+    broker := flag.String("broker", "127.0.0.1", "the broker ip address")
+    port := flag.Int("port", 1883, "the broker port")
+    flag.Parse()
+
+    // ctrlc handler 
     sigs := make(chan os.Signal, 1)
     end := make(chan bool, 1)
     signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-    
-    // TODO! cli args
-    var broker = "127.0.0.1"
-    var port = 1883
 
     opts := mqtt.NewClientOptions()
-    opts.AddBroker(fmt.Sprintf("tcp://%s:%d", broker, port))
+    opts.AddBroker(fmt.Sprintf("tcp://%s:%d", *broker, *port))
     opts.SetClientID("go_mqtt_client")
-    opts.SetDefaultPublishHandler(onPublishHandler)
+    opts.SetDefaultPublishHandler(defaultPubHandler)
 
     opts.OnConnect = onConnectHandler
     opts.OnConnectionLost = onLostHandler
     client := mqtt.NewClient(opts)
-    if token := client.Connect(); token.Wait() && token.Error() != nil {
+    if token := client.Connect(); token.WaitTimeout(time.Duration(time.Duration.Seconds(5))) && token.Error() != nil {
         panic(token.Error())
     }
+    
+    go func() {
+        FillMatchers(util.Disconnect, util.GetConfig, util.GetLocation, util.SetConfig)
+    
+        sub(client, util.GetConfig, configHandler)
+        sub(client, util.GetLocation, locateHandler)
+        sub(client, util.Disconnect, disconnectHandler)
+    }()
 
-    sub(client, "topic/test")
-    sub(client, "camloc/locate")
-    sub(client, "camloc/loc")
-    publish(client)
-
+    
+    // cleanup
     go func() {
         <-sigs
-        fmt.Println("received shutdown request")
+        util.I("shutdown")
         client.Disconnect(200)
         end <- true
     }()
     <-end 
 }
 
-// test
-func publish(client mqtt.Client) {
-    num := 10
-    for i := 0; i < num; i++ {
-        text := fmt.Sprintf("Message %d", i)
-        token := client.Publish("topic/test", 0, false, text)
-        token.Wait()
-        time.Sleep(time.Second)
-    }
-}
-
-func sub(client mqtt.Client, topic string) {
-    token := client.Subscribe(topic, 1, nil)
+func pub(client mqtt.Client, topic string, message any) {
+    token := client.Publish(topic, 0, false, message)
     token.Wait()
-    fmt.Printf("Subscribed to topic: %s", topic)
+    util.D("published %s: %s", topic, message)
 }
 
-
+func sub(client mqtt.Client, topic string, handler mqtt.MessageHandler) {
+    token := client.Subscribe(topic, 0, handler)
+    token.Wait()
+    util.I("subscribed to topic: %s", topic)
+}
  
