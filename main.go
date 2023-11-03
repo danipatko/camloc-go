@@ -1,6 +1,7 @@
 package main
 
 import (
+	"camloc-go/calc"
 	"camloc-go/util"
 	"encoding/binary"
 	"flag"
@@ -15,14 +16,8 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
-type ClientConfig struct {
-    x       float32
-    y       float32
-    rot     float32
-    lastX   float32
-}
 
-var ClientList = make(map[string]ClientConfig)
+var ClientList = make(map[string]calc.Camera)
 var TopicMatchers = make(map[string]regexp.Regexp)
 
 func f32FromBytes(bytes []byte) float32 {
@@ -55,13 +50,19 @@ func replaceClientId(topic string, clientId string) string {
     return string(plus.ReplaceAll([]byte(topic), []byte(clientId)))
 }
 
-var defaultPubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {    
+var defaultHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {    
     util.Msg(msg.Topic(), msg.Payload())
 }
 
 var locateHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
     if id := getClientId(util.GetLocation, msg.Topic()); id != nil {
-        util.I("got position %f from %s", f32FromBytes(msg.Payload()), *id)
+        x := f32FromBytes(msg.Payload())
+        util.I("got position %f from %s", x, *id)
+
+        if entry, ok := ClientList[*id]; ok {
+            entry.LastX = float64(x)
+            ClientList[*id] = entry
+        }
     }
 }
 
@@ -83,21 +84,32 @@ var configHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Messag
 
     // update or create
     x, y, rot := f32FromBytes(payload[0:4]), f32FromBytes(payload[4:8]), f32FromBytes(payload[8:12])
-    if v, exists := ClientList[*id]; exists {
-        ClientList[*id] = ClientConfig{ x: x, y: y, rot: rot, lastX: v.lastX }
+
+    if entry, ok := ClientList[*id]; ok {
+        entry.Position = calc.Position{ X: float64(x), Y: float64(y), Rotation: float64(rot) }
+        entry.Fov = 1. // TODO
+        ClientList[*id] = entry
     } else {
-        ClientList[*id] = ClientConfig{ x: x, y: y, rot: rot, lastX: -1 }
+        ClientList[*id] = calc.Camera{ 
+            Position: calc.Position{ X: float64(x), Y: float64(y), Rotation: float64(rot) }, 
+            Fov: 1.,
+            LastX: 0.,
+        }
     }
 
     util.D("new config for %s : %v", *id, ClientList[*id])
 
-    go func ()  {
-        time.Sleep(time.Duration(time.Second * 4))
-        forceCameraState(client, true, *id) 
+    // TESTING
+    // go func ()  {
+    //     time.Sleep(time.Duration(time.Second * 2))
+    //     setAllState(client, true)
 
-        time.Sleep(time.Duration(time.Second * 4)) 
-        forceCameraState(client, false, *id) 
-    }()
+    //     time.Sleep(time.Duration(time.Second * 4)) 
+    //     flash(client, *id)
+
+    //     time.Sleep(time.Duration(time.Second * 2)) 
+    //     setAllState(client, false)
+    // }()
 }
 
 // flash lights on a client
@@ -105,21 +117,24 @@ func flash(client mqtt.Client, clientId string) {
     pub(client, replaceClientId(util.Flash, clientId), []byte{})
 }
 
-// turn on/off every client camera
-func forceAllCameraState(client mqtt.Client, on bool) {
+func askState(client mqtt.Client) {
+    pub(client, util.AskForState, []byte{})
+}
+
+func setState(client mqtt.Client, clientId string, on bool) {
     if on {
-        pub(client, util.ForceCameraOn, []byte{})
+        pub(client, replaceClientId(util.SetState, clientId), []byte{0x1})
     } else {
-        pub(client, util.ForceCameraOff, []byte{})
+        pub(client, replaceClientId(util.SetState, clientId), []byte{0x0})
     }
 }
 
-// turn on/off specifc client camera
-func forceCameraState(client mqtt.Client, on bool, clientId string) {
+// turn on/off every client camera
+func setAllState(client mqtt.Client, on bool) {
     if on {
-        pub(client, replaceClientId(util.ForceThisCameraOn, clientId), []byte{})
+        pub(client, util.SetAllState, []byte{0x1})
     } else {
-        pub(client, replaceClientId(util.ForceThisCameraOff, clientId), []byte{})
+        pub(client, util.SetAllState, []byte{0x0})
     }
 }
 
@@ -130,6 +145,7 @@ var onConnectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
     sub(client, util.GetConfig, configHandler)
     sub(client, util.GetLocation, locateHandler)
     sub(client, util.Disconnect, disconnectHandler)
+    sub(client, util.GetState, nil)
 
     // ask for config
     pub(client, util.AskForConfig, []byte{})
@@ -140,6 +156,7 @@ var onLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err erro
 }
 
 func main() {
+
     // args
     broker := flag.String("broker", "127.0.0.1", "the broker ip address")
     port := flag.Int("port", 1883, "the broker port")
@@ -153,7 +170,8 @@ func main() {
     opts := mqtt.NewClientOptions()
     opts.AddBroker(fmt.Sprintf("tcp://%s:%d", *broker, *port))
     opts.SetClientID("go_mqtt_client")
-    opts.SetDefaultPublishHandler(defaultPubHandler)
+    opts.SetDefaultPublishHandler(defaultHandler)
+    opts.SetWill(replaceClientId(util.Disconnect, opts.ClientID), "goodbye cruel world", 0, false)
 
     opts.OnConnect = onConnectHandler
     opts.OnConnectionLost = onLostHandler
@@ -164,12 +182,10 @@ func main() {
     
     FillMatchers(util.Disconnect, util.GetConfig, util.GetLocation, util.SetConfig)
 
-
-  
     // cleanup
     go func() {
-        <-sigs
-        util.I("shutdown")
+        s := <-sigs
+        util.I("%s", s)
         client.Disconnect(500)
         end <- true
     }()
