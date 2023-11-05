@@ -156,6 +156,19 @@ var onLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err erro
 }
 
 func main() {
+    // TEST
+    calc.Calc(0, 3, 3, 0, 0.5, 0.5, 90, 90, 0, 0)
+
+    cam1 := calc.Camera {
+        Position: calc.Position{ X: 0, Y: 3, Rotation: 0 },
+    }
+    cam2 := calc.Camera {
+        Position: calc.Position{ X: 3, Y: 0, Rotation: 90 },
+    }
+
+    fmt.Printf("calc.CheckSetup(cam1, cam2): %v\n", calc.CheckSetup(cam1, cam2))
+
+    return
 
     // args
     broker := flag.String("broker", "127.0.0.1", "the broker ip address")
