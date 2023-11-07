@@ -83,16 +83,16 @@ var configHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Messag
     }
 
     // update or create
-    x, y, rot := f32FromBytes(payload[0:4]), f32FromBytes(payload[4:8]), f32FromBytes(payload[8:12])
+    x, y, rot, fov := f32FromBytes(payload[0:4]), f32FromBytes(payload[4:8]), f32FromBytes(payload[8:12]), f32FromBytes(payload[12:16])
 
     if entry, ok := ClientList[*id]; ok {
         entry.Position = calc.Position{ X: float64(x), Y: float64(y), Rotation: float64(rot) }
-        entry.Fov = 1. // TODO
+        entry.Fov = float64(fov) // TODO
         ClientList[*id] = entry
     } else {
         ClientList[*id] = calc.Camera{ 
             Position: calc.Position{ X: float64(x), Y: float64(y), Rotation: float64(rot) }, 
-            Fov: 1.,
+            Fov: float64(fov),
             LastX: 0.,
         }
     }
@@ -157,18 +157,18 @@ var onLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err erro
 
 func main() {
     // TEST
-    calc.Calc(0, 3, 3, 0, 0.5, 0.5, 90, 90, 0, 0)
+    // calc.Calc(0, 3, 3, 0, 0.5, 0.5, 90, 90, 0, 0)
 
-    cam1 := calc.Camera {
-        Position: calc.Position{ X: 0, Y: 3, Rotation: 0 },
-    }
-    cam2 := calc.Camera {
-        Position: calc.Position{ X: 3, Y: 0, Rotation: 90 },
-    }
+    // cam1 := calc.Camera {
+    //     Position: calc.Position{ X: 0, Y: 3, Rotation: 0 },
+    // }
+    // cam2 := calc.Camera {
+    //     Position: calc.Position{ X: 3, Y: 0, Rotation: 90 },
+    // }
 
-    fmt.Printf("calc.CheckSetup(cam1, cam2): %v\n", calc.CheckSetup(cam1, cam2))
+    // fmt.Printf("calc.CheckSetup(cam1, cam2): %v\n", calc.CheckSetup(cam1, cam2))
 
-    return
+    // return
 
     // args
     broker := flag.String("broker", "127.0.0.1", "the broker ip address")
