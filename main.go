@@ -78,7 +78,8 @@ var disconnectHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 var configHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {    
     topic, payload := msg.Topic(), msg.Payload()
     id := getClientId(util.GetConfig, topic)
-    if id == nil {
+    if id == nil || len(payload) < 16 {
+        util.W("did not update configuration (%s)", topic)
         return
     }
 
@@ -87,7 +88,7 @@ var configHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Messag
 
     if entry, ok := ClientList[*id]; ok {
         entry.Position = calc.Position{ X: float64(x), Y: float64(y), Rotation: float64(rot) }
-        entry.Fov = float64(fov) // TODO
+        entry.Fov = float64(fov)
         ClientList[*id] = entry
     } else {
         ClientList[*id] = calc.Camera{ 
@@ -95,21 +96,26 @@ var configHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Messag
             Fov: float64(fov),
             LastX: 0.,
         }
+
+        // TESTING
+        go func ()  {
+            time.Sleep(time.Duration(time.Second * 2))
+            setConfig(client, *id, calc.Camera{ Position: calc.Position{ X: 3.5, Y: 3, Rotation: 69 } })
+            
+            // time.Sleep(time.Duration(time.Second * 2))
+            // setAllState(client, true)
+
+            // time.Sleep(time.Duration(time.Second * 4)) 
+            // flash(client, *id)
+
+            // time.Sleep(time.Duration(time.Second * 2)) 
+            // setAllState(client, false)
+        }()
     }
 
     util.D("new config for %s : %v", *id, ClientList[*id])
 
-    // TESTING
-    // go func ()  {
-    //     time.Sleep(time.Duration(time.Second * 2))
-    //     setAllState(client, true)
-
-    //     time.Sleep(time.Duration(time.Second * 4)) 
-    //     flash(client, *id)
-
-    //     time.Sleep(time.Duration(time.Second * 2)) 
-    //     setAllState(client, false)
-    // }()
+    
 }
 
 // flash lights on a client
@@ -136,6 +142,14 @@ func setAllState(client mqtt.Client, on bool) {
     } else {
         pub(client, util.SetAllState, []byte{0x0})
     }
+}
+
+func setConfig(client mqtt.Client, clientId string, config calc.Camera) {
+    buf := make([]byte, 3 * 4)
+    binary.BigEndian.PutUint32(buf[:4], math.Float32bits(float32(config.X)))
+    binary.BigEndian.PutUint32(buf[4:8], math.Float32bits(float32(config.Y)))
+    binary.BigEndian.PutUint32(buf[8:], math.Float32bits(float32(config.Rotation)))
+    pub(client, replaceClientId(util.SetConfig, clientId), buf)
 }
 
 // self connected
@@ -207,8 +221,8 @@ func main() {
 
 func pub(client mqtt.Client, topic string, message any) {
     token := client.Publish(topic, 0, false, message)
-    token.Wait()
-    util.D("published %s: %s", topic, message)
+    r := token.Wait()
+    util.D("%v published %s: %s", r, topic, message)
 }
 
 func sub(client mqtt.Client, topic string, handler mqtt.MessageHandler) {

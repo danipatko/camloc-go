@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+type Coordinates = struct {
+	X float64
+	Y float64
+}
+
 type Position = struct {
 	X float64
 	Y float64
@@ -19,23 +24,23 @@ type Camera = struct {
 }
 
 type TimedPosition = struct {
-	Position
+	Coordinates
 
 	Time time.Time
 }
 
-func Extrapolate(a, b TimedPosition) (float64, float64) {
+func Extrapolate(a, b TimedPosition) TimedPosition {
 	now := time.Now()
 
 	td := now.Sub(a.Time)
 	tmax := b.Time.Sub(a.Time)
 	t := td.Seconds() / tmax.Seconds()
 	
-	x, y := lerp(a.Position, b.Position, t)
-	return x, y
+	x, y := lerp(a.Coordinates, b.Coordinates, t)
+	return TimedPosition{ Coordinates: Coordinates { X: x, Y: y}, Time: now } 
 }
 
-func lerp(a, b Position, t float64) (float64, float64) {
+func lerp(a, b Coordinates, t float64) (float64, float64) {
 	return a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t
 }
 
