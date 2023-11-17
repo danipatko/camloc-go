@@ -1,7 +1,6 @@
 package calc
 
 import (
-	"camloc-go/util"
 	"math"
 	"time"
 )
@@ -62,7 +61,7 @@ func intersect(aslope, bslope, ax, ay, bx, by float64) (bool, float64, float64) 
 	x := (aslope * ax - bslope * bx + by - ay) / (aslope - bslope)
 	y := aslope * (x - ax) + ay
 	
-	util.D("x: %v, y: %v\n", x, y)
+	// util.D("x: %v, y: %v\n", x, y)
 	
 	if math.IsNaN(x) || math.IsInf(x, 0) || math.IsNaN(y) || math.IsInf(y, 0) {
 		return false, 0, 0

@@ -57,12 +57,34 @@ var defaultHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Messa
 var locateHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
     if id := getClientId(util.GetLocation, msg.Topic()); id != nil {
         x := f32FromBytes(msg.Payload())
-        util.I("got position %f from %s", x, *id)
+        // util.I("got position %f from %s", x, *id)
 
         if entry, ok := ClientList[*id]; ok {
             entry.LastX = float64(x)
             ClientList[*id] = entry
         }
+
+        locate()
+    }
+}
+
+func locate() {
+    l := len(ClientList)
+    if l < 2 {
+        return
+    }
+
+    keys := make([]string, 0, l)
+    for k := range ClientList {
+        keys = append(keys, k)
+    }
+
+    if math.IsNaN(ClientList[keys[0]].LastX) || math.IsNaN(ClientList[keys[1]].LastX) {
+        return
+    }
+
+    if ok, ax, ay := calc.Calc(ClientList[keys[0]].X, ClientList[keys[0]].Y, ClientList[keys[1]].X, ClientList[keys[1]].Y, ClientList[keys[0]].LastX, ClientList[keys[1]].LastX, ClientList[keys[0]].Fov, ClientList[keys[1]].Fov, ClientList[keys[0]].Rotation, ClientList[keys[1]].Rotation); ok {
+        util.D("calc (%f ; %f)", ax, ay)
     }
 }
 
@@ -86,6 +108,8 @@ var configHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Messag
     // update or create
     x, y, rot, fov := f32FromBytes(payload[0:4]), f32FromBytes(payload[4:8]), f32FromBytes(payload[8:12]), f32FromBytes(payload[12:16])
 
+    // util.D("ClientList: %v", ClientList)
+
     if entry, ok := ClientList[*id]; ok {
         entry.Position = calc.Position{ X: float64(x), Y: float64(y), Rotation: float64(rot) }
         entry.Fov = float64(fov)
@@ -98,19 +122,25 @@ var configHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Messag
         }
 
         // TESTING
-        go func ()  {
-            time.Sleep(time.Duration(time.Second * 2))
-            setConfig(client, *id, calc.Camera{ Position: calc.Position{ X: 3.5, Y: 3, Rotation: 69 } })
-            
+        // go func ()  {
             // time.Sleep(time.Duration(time.Second * 2))
-            // setAllState(client, true)
+            // if len(ClientList) == 1 {
+            //     util.D("SETTING TO 0 3 0")
+            //     setConfig(client, *id, calc.Camera{ Position: calc.Position{ X: 0, Y: 3, Rotation: 0 } })
+            // } else {
+            //     util.D("SETTING TO 3 0 90")
+            //     setConfig(client, *id, calc.Camera{ Position: calc.Position{ X: 3, Y: 0, Rotation: 90 } })
+            // }
 
-            // time.Sleep(time.Duration(time.Second * 4)) 
-            // flash(client, *id)
-
+            // time.Sleep(time.Duration(time.Second * 1))
+            setState(client, *id, true)
+            
+            // // time.Sleep(time.Duration(time.Second * 4)) 
+            // // flash(client, *id)
+            
             // time.Sleep(time.Duration(time.Second * 2)) 
-            // setAllState(client, false)
-        }()
+            // setState(client, *id, false)
+        // }()
     }
 
     util.D("new config for %s : %v", *id, ClientList[*id])
@@ -213,6 +243,7 @@ func main() {
     go func() {
         s := <-sigs
         util.I("%s", s)
+        setAllState(client, false)
         client.Disconnect(500)
         end <- true
     }()
@@ -221,8 +252,8 @@ func main() {
 
 func pub(client mqtt.Client, topic string, message any) {
     token := client.Publish(topic, 0, false, message)
-    r := token.Wait()
-    util.D("%v published %s: %s", r, topic, message)
+    token.Wait()
+    util.D("published %s: %s", topic, message)
 }
 
 func sub(client mqtt.Client, topic string, handler mqtt.MessageHandler) {
